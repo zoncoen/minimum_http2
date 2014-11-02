@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"net/http"
 )
 
 type Frame interface {
@@ -42,16 +43,13 @@ func (frame *SettingsFrame) Header() *FrameHeader {
 	return frame.FrameHeader
 }
 
-type HeadersMaper interface {
-	HeadersMap() map[string]string
+type HeadersMapper interface {
+	HeadersMap() http.Header
 }
 
 type HeadersFrame struct {
-	FrameHeader      *FrameHeader
-	PadLength        uint8
-	StreamDependency uint32
-	Weight           uint8
-	Headers          map[string]string
+	FrameHeader *FrameHeader
+	Headers     http.Header
 }
 
 func NewHeadersFrame(flags uint8, streamId uint32) *HeadersFrame {
@@ -63,7 +61,7 @@ func NewHeadersFrame(flags uint8, streamId uint32) *HeadersFrame {
 
 	frame := &HeadersFrame{
 		FrameHeader: header,
-		Headers:     map[string]string{},
+		Headers:     make(http.Header),
 	}
 
 	return frame
@@ -74,7 +72,7 @@ func (frame *HeadersFrame) Header() *FrameHeader {
 }
 
 func (frame *HeadersFrame) AddHeader(name string, value string) {
-	frame.Headers[name] = value
+	frame.Headers.Add(name, value)
 }
 
 func (frame *HeadersFrame) Write(w io.Writer) (err error) {
@@ -87,23 +85,11 @@ func (frame *HeadersFrame) Write(w io.Writer) (err error) {
 
 	// set flags and length
 	frame.FrameHeader.Flags = END_HEADERS
-	length := 8 + 32 + 8 + len(packedHeaders)
+	length := len(packedHeaders)
 	frame.FrameHeader.SetLength(length)
 
 	// convert to bytes
 	err = binary.Write(buf, binary.BigEndian, frame.FrameHeader)
-	if err != nil {
-		return err
-	}
-	err = binary.Write(buf, binary.BigEndian, frame.PadLength)
-	if err != nil {
-		return err
-	}
-	err = binary.Write(buf, binary.BigEndian, frame.StreamDependency)
-	if err != nil {
-		return err
-	}
-	err = binary.Write(buf, binary.BigEndian, frame.Weight)
 	if err != nil {
 		return err
 	}
@@ -120,7 +106,7 @@ func (frame *HeadersFrame) Write(w io.Writer) (err error) {
 	return nil
 }
 
-func (frame *HeadersFrame) HeadersMap() map[string]string {
+func (frame *HeadersFrame) HeadersMap() http.Header {
 	return frame.Headers
 }
 
@@ -133,6 +119,22 @@ type DataFrame struct {
 	Data        []byte
 }
 
+func NewDataFrame(flags uint8, streamId uint32, data []byte) *DataFrame {
+	header := &FrameHeader{
+		Type:     DataFrameType,
+		Flags:    flags,
+		StreamId: streamId,
+	}
+	header.SetLength(len(data))
+
+	frame := &DataFrame{
+		FrameHeader: header,
+		Data:        data,
+	}
+
+	return frame
+}
+
 func (frame *DataFrame) Header() *FrameHeader {
 	return frame.FrameHeader
 }
@@ -142,9 +144,56 @@ func (frame *DataFrame) Write(w io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
+	err = binary.Write(w, binary.BigEndian, frame.Data)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
 func (frame *DataFrame) DataByte() []byte {
 	return frame.Data
+}
+
+type GoAwayFrame struct {
+	FrameHeader  *FrameHeader
+	LastStreamId uint32
+	ErrorCode    uint32
+}
+
+func NewGoAwayFrame(lastStreamId uint32, errorCode uint32) *GoAwayFrame {
+	header := &FrameHeader{
+		Type:     GoAwayFrameType,
+		Flags:    UNSET,
+		StreamId: uint32(0),
+	}
+	header.SetLength(64)
+
+	frame := &GoAwayFrame{
+		FrameHeader:  header,
+		LastStreamId: lastStreamId,
+		ErrorCode:    errorCode,
+	}
+
+	return frame
+}
+
+func (frame *GoAwayFrame) Write(w io.Writer) (err error) {
+	err = binary.Write(w, binary.BigEndian, frame.FrameHeader)
+	if err != nil {
+		return err
+	}
+	err = binary.Write(w, binary.BigEndian, frame.LastStreamId)
+	if err != nil {
+		return err
+	}
+	err = binary.Write(w, binary.BigEndian, frame.ErrorCode)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (frame *GoAwayFrame) Header() *FrameHeader {
+	return frame.FrameHeader
 }

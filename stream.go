@@ -5,18 +5,25 @@ import (
 )
 
 type Stream struct {
-	Id        uint32
-	ReadChan  chan Frame
-	WriteChan chan Frame
-	Header    http.Header
+	Id         uint32
+	ReadChan   chan Frame
+	WriteChan  chan Frame
+	Header     http.Header
+	Body       []byte
+	HeaderChan chan http.Header
+	BodyChan   chan []byte
+	Quit       chan struct{}
 }
 
 func NewStream(id uint32, writeChan chan Frame) *Stream {
 	stream := &Stream{
-		Id:        id,
-		ReadChan:  make(chan Frame),
-		WriteChan: writeChan,
-		Header:    http.Header{},
+		Id:         id,
+		ReadChan:   make(chan Frame),
+		WriteChan:  writeChan,
+		Header:     http.Header{},
+		Body:       make([]byte, 0),
+		HeaderChan: make(chan http.Header),
+		BodyChan:   make(chan []byte),
 	}
 	go stream.ReadLoop()
 	return stream
@@ -35,28 +42,40 @@ func (stream *Stream) ReadLoop() (err error) {
 			header := frame.Header()
 			if header.Type == SettingsFrameType {
 				if header.Flags == UNSET {
-					debug("Recv", header.TypeString(), header.FlagsString())
+					debug("Recv", header.TypeString(), header.FlagsString(), header.StreamId)
 					ackFrame := NewSettingsFrame(ACK)
 					stream.Write(ackFrame)
 				}
 				if header.Flags == ACK {
-					debug("Recv", header.TypeString(), header.FlagsString())
+					debug("Recv", header.TypeString(), header.FlagsString(), header.StreamId)
 				}
 			}
 			if header.Type == HeadersFrameType {
-				debug("Recv", header.TypeString(), header.FlagsString())
-				if f, ok := frame.(HeadersMaper); ok {
+				debug("Recv", header.TypeString(), header.FlagsString(), header.StreamId)
+				if f, ok := frame.(HeadersMapper); ok {
 					for k, v := range f.HeadersMap() {
-						stream.Header.Add(k, v)
+						stream.Header.Add(k, v[0])
 					}
+				}
+				if header.Flags == END_HEADERS {
+					stream.HeaderChan <- stream.Header
 				}
 			}
 			if header.Type == DataFrameType {
-				debug("Recv", header.TypeString(), header.FlagsString())
+				debug("Recv", header.TypeString(), header.FlagsString(), header.StreamId)
 				if f, ok := frame.(DataByter); ok {
-					debug(string(f.DataByte()))
+					stream.Body = append(stream.Body, f.DataByte()...)
+				}
+				if header.Flags == END_STREAM {
+					stream.BodyChan <- stream.Body
 				}
 			}
+			if header.Type == GoAwayFrameType {
+				debug("Recv", header.TypeString(), header.FlagsString(), header.StreamId)
+				break
+			}
+		case <-stream.Quit:
+			break
 		}
 	}
 }
